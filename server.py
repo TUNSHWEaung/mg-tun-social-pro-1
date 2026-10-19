@@ -1,21 +1,44 @@
+
 from flask import Flask, request, jsonify
 import os
 
 app = Flask(__name__)
 
-@app.route('/process-video', methods=['POST'])
-def process_video():
-    data = request.get_json()
-    yt_url = data.get('url')
-    
-    # ဒီနေရာမှာ YouTube Download၊ ၃ မိနစ်စာ ခွဲထုတ်ခြင်း၊ စာတန်းထိုးထည့်ခြင်း စတဲ့ Python Code များကို Run ခိုင်းပါမယ်
-    print(f"Processing URL: {yt_url}")
-    
-    # Video Processing အလုပ်များပြီးပါက
+@app.get("/")
+def home():
     return jsonify({
-        "status": "success",
-        "message": "Video processed and split successfully!"
+        "status": "online",
+        "service": "MG TUN Video API"
+    })
+
+@app.post("/process-video")
+def process_video():
+    data = request.get_json(silent=True) or {}
+    yt_url = data.get("url")
+
+    if not isinstance(yt_url, str) or not yt_url.strip():
+        return jsonify({
+            "status": "error",
+            "message": "url is required"
+        }), 400
+
+    if not yt_url.startswith(("https://", "http://")):
+        return jsonify({
+            "status": "error",
+            "message": "Invalid URL"
+        }), 400
+
+    print(f"Received URL: {yt_url}")
+
+    # TODO: Add actual video-processing logic here.
+    return jsonify({
+        "status": "accepted",
+        "message": "URL received; video processing is not implemented yet.",
+        "url": yt_url
     }), 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000))
+    )

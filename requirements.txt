@@ -1,2 +1,6 @@
-Flask
-gunicorn
+flask
+yt-dlp
+moviepy
+openai-whisper
+torch
+numpy

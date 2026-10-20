@@ -1,8 +1,6 @@
-# -*- coding: UTF-8 -*-
-flask
-yt-dlp
-moviepy
-openai-whisper
-torch
-numpy
+
+Flask
 gunicorn
+moviepy>=2.0.0
+gdown
+imageio-ffmpeg

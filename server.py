@@ -1,204 +1,127 @@
-
 import os
-import uuid
-import shutil
-from pathlib import Path
-from urllib.parse import urlparse
+import io
+import requests
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
-import gdown
-from flask import Flask, request, jsonify, send_from_directory
-from werkzeug.middleware.proxy_fix import ProxyFix
-from moviepy.video.io.VideoFileClip import VideoFileClip
+# Google Drive API ရဲ့ Scope (ဖိုင်များကို ဖတ်ရှုရန်)
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+# Buffer API သတင်းအချက်အလက်များ
+BUFFER_API_KEY = 'YOUR_BUFFER_API_KEY'
+BUFFER_CHANNEL_ID = 'YOUR_BUFFER_CHANNEL_ID' # TikTok ချိတ်ဆက်ထားသော Buffer Channel ID
 
-BASE_DIR = Path(__file__).resolve().parent
-CLIPS_DIR = BASE_DIR / "clips"
-TEMP_DIR = BASE_DIR / "temp"
-CLIPS_DIR.mkdir(exist_ok=True)
-TEMP_DIR.mkdir(exist_ok=True)
+def get_drive_service():
+    """Google Drive API Authentication ပြုလုပ်ခြင်း"""
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    return build('drive', 'v3', credentials=creds)
 
-MAX_VIDEO_MB = 500
+def download_videos_from_folder(folder_id):
+    """Google Drive သတ်မှတ်ထားသော Folder ထဲမှ ဗီဒီယိုများကို ဒေါင်းလုပ်ဆွဲခြင်း"""
+    service = get_drive_service()
+    
+    # ဖိုင်တွဲထဲရှိ ဗီဒီယိုဖိုင်များကို ရှာဖွေရန် Query
+    query = f"'{folder_id}' in parents and mimeType contains 'video/' and trashed = false"
+    results = service.files().list(
+        q=query, pageSize=10, fields="files(id, name, mimeType)").execute()
+    items = results.get('files', [])
 
+    if not items:
+        print("ဗီဒီယိုဖိုင်များ မတွေ့ရှိပါ။")
+        return []
 
-@app.route("/")
-def home():
-    return jsonify({
-        "status": "online",
-        "service": "MG TUN Video Splitter",
-        "clip_length_seconds": 180
-    })
+    downloaded_files = []
+    os.makedirs('downloads', exist_ok=True)
 
+    for item in items:
+        file_id = item['id']
+        file_name = item['name']
+        file_path = os.path.join('downloads', file_name)
+        
+        print(f"ဒေါင်းလုပ်ဆွဲနေသည်: {file_name}...")
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            
+        with open(file_path, 'wb') as f:
+            f.write(fh.getvalue())
+            
+        downloaded_files.append((file_path, file_name))
+        print(f"ပြီးဆုံးပါပြီ: {file_path}")
 
-@app.route("/clips/<job_id>/<filename>")
-def get_clip(job_id, filename):
-    # ဖိုင်အမည်ဖြင့် အခြားဖိုင်များကို ဝင်မဖတ်နိုင်အောင် စစ်ဆေးခြင်း
-    if not job_id.isalnum():
-        return jsonify({"error": "Invalid job ID"}), 400
+    return downloaded_files
 
-    if Path(filename).name != filename:
-        return jsonify({"error": "Invalid filename"}), 400
-
-    folder = CLIPS_DIR / job_id
-
-    if not folder.is_dir():
-        return jsonify({"error": "Video not found"}), 404
-
-    return send_from_directory(folder, filename, as_attachment=False)
-
-
-def download_authorized_drive_video(url, output_file):
-    """Public Google Drive share link မှ ဗီဒီယိုရယူခြင်း။"""
-
-    parsed = urlparse(url)
-
-    if parsed.scheme != "https" or parsed.hostname not in (
-        "drive.google.com",
-        "docs.google.com"
-    ):
-        raise ValueError(
-            "HTTPS Google Drive share link ကိုသာ အသုံးပြုပါ။"
-        )
-
-    result = gdown.download(
-        url=url,
-        output=str(output_file),
-        quiet=False,
-        fuzzy=True
-    )
-
-    if not result or not output_file.is_file():
-        raise ValueError(
-            "ဗီဒီယိုကို ရယူမရပါ။ Google Drive sharing ကို "
-            "'Anyone with the link' ဖြင့် ခွင့်ပြုထားကြောင်း စစ်ပါ။"
-        )
-
-    size_mb = output_file.stat().st_size / (1024 * 1024)
-
-    if size_mb > MAX_VIDEO_MB:
-        output_file.unlink(missing_ok=True)
-        raise ValueError(
-            f"ဗီဒီယိုအရွယ်အစား {MAX_VIDEO_MB} MB ထက်ကျော်နေပါတယ်။"
-        )
-
-    if size_mb < 0.01:
-        raise ValueError("ရရှိလာသောဖိုင်သည် ဗီဒီယိုဖိုင် မဟုတ်နိုင်ပါ။")
-
-
-def split_video(input_file, output_folder, clip_length=180):
-    """MoviePy 1.x နှင့် 2.x နှစ်မျိုးလုံးအတွက် ၃ မိနစ်စီခွဲခြင်း။"""
-
-    clip_files = []
-    video = None
-
-    try:
-        video = VideoFileClip(str(input_file))
-        duration = video.duration
-
-        if not duration or duration <= 0:
-            raise ValueError("ဗီဒီယိုကြာချိန်ကို ဖတ်မရပါ။")
-
-        total_parts = int((duration + clip_length - 1) // clip_length)
-
-        for i in range(total_parts):
-            start = i * clip_length
-            end = min(start + clip_length, duration)
-
-            output_file = output_folder / f"part_{i + 1}.mp4"
-
-            # MoviePy 2.x မှာ subclipped၊ 1.x မှာ subclip
-            if hasattr(video, "subclipped"):
-                part = video.subclipped(start, end)
-            else:
-                part = video.subclip(start, end)
-
-            try:
-                part.write_videofile(
-                    str(output_file),
-                    codec="libx264",
-                    audio_codec="aac",
-                    logger=None,
-                    threads=2
-                )
-            finally:
-                part.close()
-
-            clip_files.append(output_file)
-
-        return clip_files
-
-    finally:
-        if video is not None:
-            video.close()
-
-
-@app.route("/process-video", methods=["POST"])
-def process_video():
-    data = request.get_json(silent=True) or {}
-    video_url = data.get("url", "").strip()
-
-    if not video_url:
-        return jsonify({
-            "status": "error",
-            "message": "Google Drive video URL is missing"
-        }), 400
-
-    job_id = uuid.uuid4().hex
-    work_folder = TEMP_DIR / job_id
-    output_folder = CLIPS_DIR / job_id
-
-    work_folder.mkdir(parents=True, exist_ok=True)
-    output_folder.mkdir(parents=True, exist_ok=True)
-
-    input_file = work_folder / "input_video"
-
-    try:
-        download_authorized_drive_video(video_url, input_file)
-
-        clip_files = split_video(
-            input_file,
-            output_folder,
-            clip_length=180
-        )
-
-        base_url = request.url_root.rstrip("/")
-
-        clip_urls = [
-            f"{base_url}/clips/{job_id}/{file.name}"
-            for file in clip_files
-        ]
-
-        return jsonify({
-            "status": "success",
-            "job_id": job_id,
-            "total_parts": len(clip_urls),
-            "clip_length_seconds": 180,
-            "clip_urls": clip_urls,
-            "parts": [
-                {
-                    "part_number": i + 1,
-                    "caption": f"အပိုင်း {i + 1}",
-                    "video_url": clip_url
+def post_to_buffer(video_url, caption):
+    """Buffer API ကိုသုံး၍ ပို့စ်တင်ခြင်း (TikTok အတွက်)"""
+    url = "https://api.buffer.com"
+    
+    # Buffer GraphQL mutation ဖြင့် ဗီဒီယိုပို့စ်တင်ခြင်း
+    query = """
+    mutation CreatePost($input: CreatePostInput!) {
+      createPost(input: $input) {
+        __typename
+        ... on MutationSuccess {
+          success
+        }
+        ... on MutationError {
+          message
+        }
+      }
+    }
+    """
+    
+    payload = {
+        "query": query,
+        "variables": {
+            "input": {
+                "channelId": BUFFER_CHANNEL_ID,
+                "text": caption,
+                "assets": {
+                    "video": {
+                        "url": video_url
+                    }
                 }
-                for i, clip_url in enumerate(clip_urls)
-            ]
-        }), 200
+            }
+        }
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {BUFFER_API_KEY}"
+    }
 
-    except Exception as e:
-        app.logger.exception("Video processing failed")
+    response = requests.post(url, json=payload, headers=headers)
+    return response.json()
 
-        shutil.rmtree(output_folder, ignore_errors=True)
-
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-    finally:
-        shutil.rmtree(work_folder, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    # ၁။ သင့်ရဲ့ Google Drive Folder ID ကို ထည့်ပါ
+    FOLDER_ID = 'YOUR_GOOGLE_DRIVE_FOLDER_ID'
+    
+    # ၂။ ဗီဒီယိုများကို ဒေါင်းလုပ်ဆွဲမည်
+    videos = download_videos_from_folder(FOLDER_ID)
+    
+    # ၃။ Buffer သို့ တင်ရန် (Buffer က Public URL ကိုသာ လက်ခံသောကြောင့် 
+    # ဗီဒီယိုဖိုင်များကို Public Cloud တွင် တင်ပြီးသား URL ကို အသုံးပြုရပါမည်)
+    for path, name in videos:
+        print(f"Buffer သို့ ပို့ဆောင်ရန် စီစဉ်နေသည်: {name}")
+        # ဥပမာ - Public URL တစ်ခုရှိပါက အောက်ပါအတိုင်း ချိတ်ဆက်နိုင်ပါသည်
+        # response = post_to_buffer("https://your-public-server.com/downloads/" + name, f"Auto upload: {name}")
+        # print(response)

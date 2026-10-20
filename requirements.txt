@@ -1,6 +1,1 @@
-
-Flask
-gunicorn
-moviepy>=2.0.0
-gdown
-imageio-ffmpeg
+requirements.txt

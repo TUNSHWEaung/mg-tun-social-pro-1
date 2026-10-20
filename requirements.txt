@@ -5,3 +5,11 @@ moviepy
 openai-whisper
 torch
 numpy
+flask
+yt-dlp
+moviepy
+openai-whisper
+torch
+numpy
+gunicorn
+

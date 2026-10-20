@@ -1,44 +1,73 @@
-
-from flask import Flask, request, jsonify
 import os
+from flask import Flask, request, jsonify
+from yt_dlp import YoutubeDL
+from moviepy.video.io.VideoFileClip import VideoFileClip
+import whisper
 
 app = Flask(__name__)
 
-@app.get("/")
-def home():
-    return jsonify({
-        "status": "online",
-        "service": "MG TUN Video API"
-    })
+# ၁။ YouTube Video ဒေါင်းလုဒ်ဆွဲခြင်း
+def download_youtube_video(url, output_path="video.mp4"):
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': output_path,
+    }
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    print("Video downloaded successfully!")
 
-@app.post("/process-video")
+# ၂။ ၃ မိနစ်စာ (၁၈၀ စက္ကန့်) စီ ဗီဒီယို ခွဲထုတ်ခြင်း
+def split_video(input_file, clip_length=180):
+    clip = VideoFileClip(input_file)
+    duration = int(clip.duration)
+    
+    os.makedirs("clips", exist_ok=True)
+    clip_files = []
+    
+    for i, start in enumerate(range(0, duration, clip_length)):
+        end = min(start + clip_length, duration)
+        output_filename = f"clips/part_{i+1}.mp4"
+        
+        subclip = clip.subclip(start, end)
+        subclip.write_videofile(output_filename, codec="libx264", audio_codec="aac")
+        clip_files.append(output_filename)
+        
+    clip.close()
+    return clip_files
+
+# ၃။ AI ဖြင့် စာတန်းထိုးယူခြင်း (Whisper)
+def generate_subtitles(video_path):
+    model = whisper.load_model("base")
+    result = model.transcribe(video_path)
+    return result["text"]
+
+# 🌐 n8n မှ HTTP Request လှမ်းခေါ်သည့်အခါ အလုပ်လုပ်မည့် API Endpoint
+@app.route('/process-video', methods=['POST'])
 def process_video():
-    data = request.get_json(silent=True) or {}
-    yt_url = data.get("url")
-
-    if not isinstance(yt_url, str) or not yt_url.strip():
+    data = request.get_json()
+    yt_url = data.get('url')
+    
+    if not yt_url:
+        return jsonify({"error": "YouTube URL is missing"}), 400
+    
+    try:
+        # Step 1: Download
+        download_youtube_video(yt_url, "input_video.mp4")
+        
+        # Step 2: Split into 3-minute clips
+        clips = split_video("input_video.mp4", clip_length=180)
+        
+        # Step 3: (Optional) Subtitle & TikTok upload logic တွေ ဒီမှာ ဆက်ထည့်နိုင်ပါတယ်
+        
         return jsonify({
-            "status": "error",
-            "message": "url is required"
-        }), 400
+            "status": "success",
+            "message": f"Video successfully processed and split into {len(clips)} clips!",
+            "clips": clips
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-    if not yt_url.startswith(("https://", "http://")):
-        return jsonify({
-            "status": "error",
-            "message": "Invalid URL"
-        }), 400
-
-    print(f"Received URL: {yt_url}")
-
-    # TODO: Add actual video-processing logic here.
-    return jsonify({
-        "status": "accepted",
-        "message": "URL received; video processing is not implemented yet.",
-        "url": yt_url
-    }), 200
-
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
-    )
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
